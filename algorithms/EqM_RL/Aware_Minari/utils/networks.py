@@ -67,8 +67,8 @@ class CriticMLP(Module):
         self.model = nn.Sequential(*layers)
 
     
-    def forward(self,action,state):
-        x = torch.concat([action,state],dim=-1)
+    def forward(self,state,action):
+        x = torch.concat([state,action],dim=-1)
         o = self.model(x)
         return o
         
