@@ -38,7 +38,7 @@ class MLP(Module):
         
 
 
-class ConditionalMLP(Module):
+class CriticMLP(Module):
     def __init__(self, input_dim, output_dim,hidden_dim,num_hidden_layers):
         super().__init__()
 
@@ -54,11 +54,13 @@ class ConditionalMLP(Module):
         first_layer = lin(self.input_dim,self.hidden_dim)
         layers.append(first_layer)
         layers.append(nn.Mish())
-        
+        layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim))
+
         for _ in range(0,self.num_hidden_layers-1):
             body = lin(self.hidden_dim,self.hidden_dim)
             layers.append(body)
             layers.append(nn.Mish())
+            layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim))
         
         head = lin(self.hidden_dim,self.output_dim)
         layers.append(head)
@@ -71,6 +73,6 @@ class ConditionalMLP(Module):
         return o
         
     
-        
+
         
         
