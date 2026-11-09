@@ -35,8 +35,14 @@ num_actions_inference: 1
 checkpoints_path: "/Users/batin13/Desktop/RL Projects/Trained_Models/checkpoints/"
 device: mps # or 'cuda'
 
+
+
+num_critic: 10
+
 # Otter Agent Hyperparameters (Unpacked via **cfg.agent)
 agent:
+  critic_type: nsemble_q #twin_critic
+  num_critic: 10 #2
   gamma: ${gamma}
   tau: ${tau}
   temperature: ${temperature}

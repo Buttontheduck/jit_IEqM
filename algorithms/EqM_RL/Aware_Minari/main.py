@@ -1,100 +1,20 @@
 import os
-import random
 import uuid
-from typing import Optional, Tuple, Union
-
 import gymnasium as gym
 import hydra
 import numpy as np
 import torch
-import torch.nn.functional
 from buffer import ReplayBuffer
 from minari_utils import get_ref_scores, minari_normalized_score, prepare_minari_data
 from actor_models import Actor
-from critic_models import DeterministicCritic
+from critic_models import TwinCritic, VCritic
 from agents import Otter
 from omegaconf import DictConfig, OmegaConf
 from tqdm import trange
 from utils.networks import ConditionalMLP
 from logger import global_logger as gl
 import wandb
-
-
-def set_seed(
-    seed: int, env: Optional[gym.Env] = None, deterministic_torch: bool = False
-):
-    if env is not None:
-        env.action_space.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.use_deterministic_algorithms(deterministic_torch)
-
-
-def compute_mean_std(states: np.ndarray, eps: float) -> Tuple[np.ndarray, np.ndarray]:
-    mean = states.mean(0)
-    std = states.std(0) + eps
-    return mean, std
-
-
-def normalize_states(states: np.ndarray, mean: np.ndarray, std: np.ndarray):
-    return (states - mean) / std
-
-
-def wrap_env(
-    env: gym.Env,
-    state_mean: Union[np.ndarray, float] = 0.0,
-    state_std: Union[np.ndarray, float] = 1.0,
-) -> gym.Env:
-    def normalize_state(state):
-        # Ensure the state matches the 32-bit float dtype standard in RL
-        return ((state - state_mean) / state_std).astype(np.float32)
-
-    # Gymnasium requires explicitly defining the new observation space.
-    # Since we normalized, the bounds are technically [-inf, inf]
-    new_obs_space = gym.spaces.Box(
-        low=-np.inf, high=np.inf, shape=env.observation_space.shape, dtype=np.float32
-    )
-
-    env = gym.wrappers.TransformObservation(env, normalize_state, new_obs_space)
-    return env
-
-def return_reward_range(dataset, max_episode_steps):
-    returns, lengths = [], []
-    ep_ret, ep_len = 0.0, 0
-    for r, term, trun in zip(
-        dataset["rewards"], dataset["terminations"], dataset["truncations"]
-    ):
-        d = term or trun
-        ep_ret += float(r)
-        ep_len += 1
-        if d or ep_len == max_episode_steps:
-            returns.append(ep_ret)
-            lengths.append(ep_len)
-            ep_ret, ep_len = 0.0, 0
-    lengths.append(ep_len)  # but still keep track of number of steps
-    assert sum(lengths) == len(dataset["rewards"])
-    return min(returns), max(returns)
-
-
-def modify_reward(dataset, env_name, max_episode_steps=1000):
-    if any(s in env_name for s in ("halfcheetah", "hopper", "walker2d")):
-        min_ret, max_ret = return_reward_range(dataset, max_episode_steps)
-        dataset["rewards"] /= max_ret - min_ret
-        dataset["rewards"] *= max_episode_steps
-    elif "antmaze" in env_name:
-        dataset["rewards"] -= 1.0
-
-
-def wandb_init(config: dict) -> None:
-    wandb.init(
-        config=config,
-        project=config.get("project"),
-        group=config.get("group"),
-        name=config.get("run_name"),
-        id=config.get("run_id"),
-    )
+from utils.helper import set_seed,compute_mean_std,normalize_states,wrap_env,return_reward_range,modify_reward,wandb_init
 
 
 @hydra.main(version_base=None, config_path=".", config_name="config")
@@ -151,9 +71,15 @@ def train(cfg: DictConfig):
         "num_hidden_layers": cfg.num_hidden_layers
     }
     
-    critic_kwargs = {
+    Qcritic_kwargs = {
         "state_dim" :        state_dim,
         "action_dim":        action_dim,
+        "hidden_dim":        cfg.hidden_dim,
+        "num_hidden_layers": cfg.num_hidden_layers
+    }
+
+    Vcritic_kwargs = {
+        "state_dim" :        state_dim,
         "hidden_dim":        cfg.hidden_dim,
         "num_hidden_layers": cfg.num_hidden_layers
     }
@@ -161,17 +87,19 @@ def train(cfg: DictConfig):
     model = ConditionalMLP(**model_kwargs)
     model.to(cfg.device)
     model_optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
-    critic_1 = DeterministicCritic(**critic_kwargs)
-    critic_2 = DeterministicCritic(**critic_kwargs)
-    critic_1.to(cfg.device)
-    critic_2.to(cfg.device)
-    critic_1_optimizer = torch.optim.Adam(critic_1.parameters(), lr=cfg.learning_rate)
-    critic_2_optimizer = torch.optim.Adam(critic_2.parameters(), lr=cfg.learning_rate)
     
+        
+    Qnets = TwinCritic(**Qcritic_kwargs)
+    Vnet  = VCritic(**Vcritic_kwargs)
+    Qnets.to(cfg.device)
+    Vnet.to(cfg.device)
+    Qnets_optimizer = torch.optim.Adam(Qnets.parameters(), lr=cfg.learning_rate)
+    Vnet_optimizer  = torch.optim.Adam(Vnet.parameters(), lr=cfg.learning_rate)
+
     actor = Actor(
         model         = model,
-        critic_1      = critic_1,
-        critic_2      = critic_2,        
+        Qnets         = Qnets,
+        Vnet          = Vnet,        
         action_dim    = action_dim,
         min_action    = env.action_space.low[0],
         max_action    = env.action_space.high[0],
@@ -184,15 +112,15 @@ def train(cfg: DictConfig):
         ood_threshold = cfg.actor.ood_threshold,
         early_stop    = cfg.actor.early_stop
         )
-    
+
     agent = Otter(
         model               = model,
         model_optimizer     = model_optimizer,
         actor               = actor,
-        critic_1            = critic_1,
-        critic_1_optimizer  = critic_1_optimizer,
-        critic_2            = critic_2,
-        critic_2_optimizer  = critic_2_optimizer,
+        Qnets               = Qnets,
+        critic_1_optimizer  = Qnets_optimizer,
+        Vnet                = Vnet,
+        critic_2_optimizer  = Vnet_optimizer,
         **cfg.agent
         )
 
