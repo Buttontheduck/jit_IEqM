@@ -1,0 +1,68 @@
+project: E
+group: Exp20_IEQM_expectile0.7
+name: Exp20_IEQM_env_namehumanoidmaze-medium-navigate-singletask-v0_expectile0.7_seed5-humanoidmaze-medium-navigate-singletask-v0-32568d06
+env_name: humanoidmaze-medium-navigate-singletask-v0
+gamma: 0.995
+expectile: 0.7
+tau: 0.005
+critic_hidden_dim: 512
+critic_n_hidden: 4
+action_clip_eps: 1.0e-05
+learning_rate: 0.0003
+batch_size: 256
+num_train_ops: 1000001
+compile: true
+hidden_dim: 512
+num_hidden_layers: 4
+scale_gradient: 8.0
+flag_type: trun
+flag_threshold: 0.8
+step_size: 0.01
+num_step: 20
+moment: 0.3
+frozen_bc_prefix: ''
+bc_root: /workspace/Trained_Models/checkpoints/
+bc_checkpoint: checkpoint_500000.pt
+eval_candidates: 32
+eval_frequency: 100000
+n_test_episodes: 50
+eval_tasks: own
+final_evals: 3
+test_seed: 69
+ogbench_dir: /workspace/ogbench_data
+log_frequency: 5000
+stats_every: 10
+checkpoints_path: /workspace/Trained_Models/checkpoints/
+checkpoint_every: 100000
+seed: 5
+device: cuda
+data_info:
+  benchmark: ogbench
+  dataset_dir: /workspace/ogbench_data
+  transitions: 2000000
+  episodes: 1000
+  state_dim: 69
+  action_dim: 21
+  max_episode_steps: 2000
+  num_tasks: 5
+  dataset_task: 1
+  task_solved_share: 0.0019604999106377363
+  reward_min: -1.0
+  reward_max: 0.0
+  q_floor: -199.99999999999983
+  eval_tasks:
+  - 1
+  eval_episodes_per_task: 50
+  score: success rate in %, mean over eval_tasks (OGBench)
+frozen_bc_run: null
+frozen_bc_config: null
+actor:
+  opt_type: nag
+  step_size: 0.01
+  num_step: 20
+  moment: 0.3
+  kind: eqm
+agent:
+  scale_gradient: 8.0
+  weighting: bc
+temperature: null
