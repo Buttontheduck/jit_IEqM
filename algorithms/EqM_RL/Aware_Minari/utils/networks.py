@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import Module
 from torch.nn import Linear as lin
-import math
+
 
 
 class MLP(Module):
@@ -64,6 +64,8 @@ class ConditionalMLP(Module):
         layers.append(head)
         self.model = nn.Sequential(*layers)
 
+
+
     
     def forward(self,action,state):
         x = torch.concat([action,state],dim=-1)
@@ -75,7 +77,7 @@ class QCriticMLP(Module):
     def __init__(self, input_dim, output_dim,hidden_dim,num_hidden_layers):
         super().__init__()
 
-        assert num_hidden_layers >= 1, "For ConditionalMLP, num_hidden_layers must be at least 1. This class does not support 0 hidden layers."
+        assert num_hidden_layers >= 1
         
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -98,6 +100,14 @@ class QCriticMLP(Module):
         head = lin(self.hidden_dim,self.output_dim)
         layers.append(head)
         self.model = nn.Sequential(*layers)
+        
+        self.reset_parameters()
+        
+    def reset_parameters(self):
+        for m in self.model.modules():
+            if isinstance(m,nn.Linear):
+                nn.init.xavier_uniform_(m.weight,gain=1.0)
+                nn.init.zeros_(m.bias)
 
     
     def forward(self,state,action):
@@ -132,6 +142,16 @@ class VCriticMLP(Module):
         head = lin(self.hidden_dim,self.output_dim)
         layers.append(head)
         self.model = nn.Sequential(*layers)
+        
+        
+        self.reset_parameters()
+        
+    def reset_parameters(self):
+        for m in self.model.modules():
+            if isinstance(m,nn.Linear):
+                nn.init.xavier_uniform_(m.weight,gain=1.0)
+                nn.init.zeros_(m.bias)
+
 
     
     def forward(self,state):

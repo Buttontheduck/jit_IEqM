@@ -10,13 +10,13 @@ import torch.nn.functional as F
 from collections import deque
 
 class Actor(nn.Module):
-    def __init__(self, model, critic_1, critic_2, action_dim, min_action, max_action, ebm,
+    def __init__(self, model, q_nets, v_net, action_dim, min_action, max_action, ebm,
                  opt_type, step_size, num_step, moment, sampler_type, ood_threshold, early_stop):
         super().__init__()
         
         self.model = model
-        self.critic_1 = critic_1
-        self.critic_2 = critic_2
+        self.q_nets = q_nets
+        self.v_net = v_net
         self.action_dim = action_dim
         self.min_action = min_action
         self.max_action = max_action
@@ -194,41 +194,54 @@ class Actor(nn.Module):
             self.train(actor_was_training)
             self.model.train(model_was_training)
 
-    @torch.no_grad()
-    def _reject_and_rank(self, actions: torch.Tensor, ood_scores: torch.Tensor, state_tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Internal method. Evaluates Q-values, rejects actions above the OOD threshold, 
-        and returns the best action. Falls back to the most ID action if all are rejected.
-        """
-        N, B, A = actions.shape
+
+    
+    @torch.no_grad
+    def sample_rejection(self, state: np.ndarray, num_actions: int = 32) -> np.ndarray:
         
+        actor_was_training = self.training
+        model_was_training = self.model.training
+        critic_1_was_training = self.critic_1.training
+        critic_2_was_training = self.critic_2.training
+
+        try:
+            self.eval()
+            self.critic_1.eval()
+            self.critic_2.eval()
+
+            if state.ndim == 1:
+                state = np.expand_dims(state, axis=0)
+
+            device = next(self.model.parameters()).device
+            state_tensor = torch.tensor(state, dtype=torch.float32, device=device)
+
+            state_repeated = state_tensor.unsqueeze(0).repeat(num_actions, 1, 1)
+            prepared_state = flatten_repeated_states(state_repeated)
+
+            batch_size_total = prepared_state.shape[0]
+            x = torch.randn((batch_size_total, self.action_dim), device=device)
+            flat_all_actions = self._implicit(x=x, state=prepared_state)
+            
+            q1_values,q2_values = self.q_nets(prepared_state,flat_all_actions)
+            q_values = torch.min(q1_values,q2_values)
+            best_idx = torch.argmax(q_values.view(-1))
+            best_action = flat_all_actions[best_idx]
+            
+            best_action = torch.clamp(
+                best_action,
+                min=self.min_action,
+                max=self.max_action,
+            )
+            
+            return best_action.cpu().numpy()
+        
+        finally:
+            self.train(actor_was_training)
+            self.model.train(model_was_training)
+            self.critic_1.train(critic_1_was_training)
+            self.critic_2.train(critic_2_was_training)
+            
        
-        flat_actions = actions.reshape(N * B, A)
-        flat_states = state_tensor.unsqueeze(0).repeat(N, 1, 1).reshape(N * B, -1)
-
-     
-        q1 = self.critic_1(flat_states, flat_actions).reshape(N, B, 1)
-        q2 = self.critic_2(flat_states, flat_actions).reshape(N, B, 1)
-        q_values = torch.min(q1, q2)
-
-
-        valid_mask = ood_scores <= self.ood_threshold
-
-
-        masked_q_values = torch.where(valid_mask, q_values, torch.tensor(-float('inf'), device=q_values.device))
-
-        best_q_indices = torch.argmax(masked_q_values, dim=0)
-
-        has_valid_action = valid_mask.any(dim=0)
-        safest_indices = torch.argmin(ood_scores, dim=0)
-        
-        final_indices = torch.where(has_valid_action, best_q_indices, safest_indices)
-
-
-        final_indices_expanded = final_indices.unsqueeze(0).expand(1, B, A)
-        best_action_tensor = torch.gather(actions, dim=0, index=final_indices_expanded).squeeze(0)
-        
-        return best_action_tensor
              
     def _implicit(self, x , state):
 

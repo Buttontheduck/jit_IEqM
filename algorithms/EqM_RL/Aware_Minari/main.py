@@ -117,10 +117,10 @@ def train(cfg: DictConfig):
         model               = model,
         model_optimizer     = model_optimizer,
         actor               = actor,
-        Qnets               = Qnets,
-        critic_1_optimizer  = Qnets_optimizer,
-        Vnet                = Vnet,
-        critic_2_optimizer  = Vnet_optimizer,
+        q_nets              = Qnets,
+        q_nets_optimizer    = Qnets_optimizer,
+        v_net               = Vnet,
+        v_net_optimizer     = Vnet_optimizer,
         **cfg.agent
         )
 
@@ -133,7 +133,7 @@ def train(cfg: DictConfig):
             done = False
             episode_reward = 0.0
             while not done:
-                action = actor.sample(state)
+                action = actor.sample_rejection(state)
                 action = np.squeeze(action, axis=0)
                 state, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated

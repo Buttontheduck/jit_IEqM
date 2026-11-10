@@ -32,10 +32,10 @@ class Otter(nn.Module):
         model: nn.Module,
         model_optimizer: torch.optim.Optimizer,
         actor: nn.Module,
-        critic_1: nn.Module,
-        critic_1_optimizer: torch.optim.Optimizer,
-        critic_2: nn.Module,
-        critic_2_optimizer: torch.optim.Optimizer,
+        q_nets: nn.Module,
+        q_nets_optimizer: torch.optim.Optimizer,
+        v_net: nn.Module,
+        v_net_optimizer: torch.optim.Optimizer,
         gamma: float = 0.99,
         tau: float = 5e-3,  # parameter for the soft target update,
         temperature: float = 1.0,
@@ -55,13 +55,12 @@ class Otter(nn.Module):
         
         self._actor = actor
 
-        self._critic_1 = critic_1
-        self._critic_1_optimizer = critic_1_optimizer
-        self._target_critic_1 = deepcopy(critic_1)
+        self._q_nets = q_nets
+        self._q_nets_optimizer = q_nets_optimizer
+        self._target_q_nets = deepcopy(q_nets)
 
-        self._critic_2 = critic_2
-        self._critic_2_optimizer = critic_2_optimizer
-        self._target_critic_2 = deepcopy(critic_2)
+        self._v_net = v_net
+        self._v_net_optimizer = v_net_optimizer
 
         self._gamma = gamma
         self._tau = tau
@@ -140,9 +139,47 @@ class Otter(nn.Module):
 
             return noisy_action_fino, target_gradient
 
+    def _bc_actor_loss(self, states, actions):
+        
+        """
+        B: Batch  Dimensions
+        A: Action Dimensions
+        S: State  Dimensions
+        K: Number of Samples
+        """
+        
+        with torch.no_grad():
 
+            rho, noise = self._sample_gamma_and_noise(actions)
+                            
+            if self.flag_type=="trun":
+                ct = self._c_trun(interpolate=self.flag_threshold,rho=rho)
+            elif self.flag_type=="lin":
+                ct = self._c_linear(rho=rho)
+            else:
+                raise ValueError(f"\n Invalid Ct FlagType: {self.flag_type!r}. ""Expected either 'lin' or 'trun'. \n")
+
+            ct = self._expand_dims(low_dim_vector=ct,reference=actions)
+
+            
+            if self.fino:
+                noisy_action, target_gradient =  self._fino_mix_data_and_compute_target(rho=rho,noise=noise,true_action=actions,eta=self.fino_knob)
+            else:
+                noisy_action, target_gradient =  self._mix_data_and_compute_target(rho=rho,noise=noise,true_action=actions)
+            
+            scaled_target_grad =  self.scale_gradient * ct * target_gradient
+            
+            
+        pred_grad = self._model(noisy_action,states)
+
+        loss_per_sample_and_dim = F.mse_loss(pred_grad, scaled_target_grad, reduction='none') # Returns (B,A), loss for each sample and each action dimension 
+        loss_per_sample = loss_per_sample_and_dim.sum(dim=-1, keepdim=True) # Returns (B,1), loss for each gradient prediction
+        
+        loss= loss_per_sample.mean() 
+        
+        return loss
     
-    def _actor_loss(self, states, actions):
+    def _rl_actor_loss(self, states, actions):
         
         """
         B: Batch  Dimensions
@@ -185,33 +222,17 @@ class Otter(nn.Module):
         #loss= loss_per_sample.mean() # scalar loss for BC case.
         
         return loss
+
     
-    def _offline_weights(self, states, actions, num_actions):
+    def _offline_weights(self, states, actions):
             with torch.no_grad():
-                # pi_actions shape: [num_actions, batch_size, action_dim]
-                pi_actions = self._actor(states, num_actions=num_actions)
-                N, B, A = pi_actions.shape
-    
-                # Repeat states and flatten both to [N * B, dim] for the critic
-                repeated_states = states.unsqueeze(0).repeat(N, 1, 1)
-                flat_states = repeated_states.reshape(N * B, -1)
-                flat_pi_actions = pi_actions.reshape(N * B, A)
-    
-                # Evaluate Q(s, a_pi) and unflatten back to [N, B, 1]
-                flat_q1 = self._critic_1(flat_states, flat_pi_actions)
-                flat_q2 = self._critic_2(flat_states, flat_pi_actions)
-                
-                q1_pi = flat_q1.reshape(N, B, -1)
-                q2_pi = flat_q2.reshape(N, B, -1)
-    
-                # Take min across critics, then average across actions to get V(s)
-                q_pi = torch.min(q1_pi, q2_pi)
-                v = q_pi.mean(dim=0) # shape: [B, 1]
-    
-                # Evaluate dataset actions [B, action_dim] with states [B, state_dim]
-                q = torch.min(self._critic_1(states, actions), self._critic_2(states, actions))  
-    
+
+                q1_value, q2_value = self._q_nets(states, actions)
+                q = torch.min(q1_value, q2_value)
+                v = self._v_net(states) # shape: [B, 1]
+
                 adv = q - v
+                
                 
 
                 weights = torch.clamp_max(input=torch.exp(adv/self._temperature), max=self._exp_adv_max) 
@@ -231,35 +252,45 @@ class Otter(nn.Module):
             return weights
     
 
-    def _critic_loss(self, states, actions, rewards, dones, next_states):
+    def _v_critic_loss(self, states, actions):
+        
         with torch.no_grad():
-            next_actions = self._actor(next_states).squeeze(0)
-
-            q_next = torch.min(
-                self._target_critic_1(next_states, next_actions),
-                self._target_critic_2(next_states, next_actions),
-            )
-            q_target = rewards + self._gamma * (1.0 - dones) * q_next
-
-        q1 = self._critic_1(states, actions)
-        q2 = self._critic_2(states, actions)
-
-        q1_loss = nn.functional.mse_loss(q1, q_target)
-        q2_loss = nn.functional.mse_loss(q2, q_target)
-        loss = q1_loss + q2_loss
+            q_1,q_2 = self._q_nets(states,actions)
+            v = self._v_net(states)
+            q = torch.min(q_1,q_2)
+            d = q - v
+            if d>=0:
+                loss = torch.multiply(0.9,d**2)
+            else:
+                loss = torch.multiply(0.1,d**2)
+        return loss
+    
+    def _q_critic_loss(self, states, actions, rewards, dones):
+        
+        with torch.no_grad():
+            v_next = self._v_net(states)
+            target = rewards + self._gamma * dones * v_next
+            q_1,q_2 = self._q_nets(states,actions)
+            q1_diff = (q_1 - target)**2
+            q2_diff = (q_2 - target)**2
+        
+        loss = q1_diff + q2_diff
         return loss
 
+
     def _update_critic(self, states, actions, rewards, dones, next_states):
-        loss = self._critic_loss(states, actions, rewards, dones, next_states)
-        self._critic_1_optimizer.zero_grad()
-        self._critic_2_optimizer.zero_grad()
-        loss.backward()
-        self._critic_1_optimizer.step()
-        self._critic_2_optimizer.step()
-        return loss.item()
+        loss_q = self._q_critic_loss(states, actions, rewards, dones)
+        loss_v = self._v_critic_loss(states, actions)
+        self._q_nets_optimizer.zero_grad()
+        self._v_net_optimizer.zero_grad()
+        loss_q.backward()
+        loss_v.backward()
+        self._q_nets_optimizer.step()
+        self._v_net_optimizer.step()
+        return loss_q.item(), loss_v.item()
 
     def _update_actor(self, states, actions):
-        loss = self._actor_loss(states, actions)
+        loss = self._bc_actor_loss(states, actions)
         self._model_optimizer.zero_grad()
         loss.backward()
         self._model_optimizer.step()
@@ -268,13 +299,12 @@ class Otter(nn.Module):
     def update(self, batch: TensorBatch) -> Dict[str, float]:
         states, actions, rewards, next_states, truncations, terminals = batch
         dones = terminals
-        critic_loss = self._update_critic(states, actions, rewards, dones, next_states)
+        q_loss,v_loss = self._update_critic(states, actions, rewards, dones, next_states)
         actor_loss  = self._update_actor(states, actions)
-
         soft_update(self._target_critic_1, self._critic_1, self._tau)
         soft_update(self._target_critic_2, self._critic_2, self._tau)
         #result = {"actor_loss": actor_loss}
-        result = {"critic_loss": critic_loss, "actor_loss": actor_loss}
+        result = {"q_critic_loss": q_loss,"v_critic_loss": v_loss, "actor_loss": actor_loss}
         return result
 
     def state_dict(self) -> Dict[str, Any]:
