@@ -1,5 +1,9 @@
 # EqM Actor for Deep RL
 
+**Implementation update:** `Aware/` and `Aware_Minari/` now follow the fetched
+IEqM trainer. The AWAC implementation descriptions below are historical;
+see [IEqM alignment](ieqm_alignment.md) for the current code and run settings.
+
 ## Objective
 Use **Equilibrium Matching (EqM)** as the **actor** (policy) of deep RL algorithms.
 

@@ -5,13 +5,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from logger import global_logger as gl
+from utils.helper import normalize_state_tensor
 
 TensorBatch = List[torch.Tensor]
 
 
+@torch.no_grad()
 def soft_update(target: nn.Module, source: nn.Module, tau: float):
-    for target_param, source_param in zip(target.parameters(), source.parameters()):
-        target_param.data.copy_((1 - tau) * target_param.data + tau * source_param.data)
+    torch._foreach_lerp_(list(target.parameters()), list(source.parameters()), tau)
 
 
 def expand_t_like_x(t, x):
@@ -33,50 +34,50 @@ class Otter(nn.Module):
         model_optimizer: torch.optim.Optimizer,
         actor: nn.Module,
         q_nets: nn.Module,
-        q_nets_optimizer: torch.optim.Optimizer,
         v_net: nn.Module,
-        v_net_optimizer: torch.optim.Optimizer,
+        state_mean: torch.Tensor,
+        state_std: torch.Tensor,
+        batch_size: int,
         gamma: float = 0.99,
-        tau: float = 5e-3,  # parameter for the soft target update,
+        tau: float = 5e-3,
+        expectile: float = 0.9,
         temperature: float = 1.0,
         exp_adv_max: float = 100.0,
         fino: bool = False,
         flag_type: str = 'trun',
         flag_threshold: float = 0.8,
-        scale_gradient: float = 4.0,
-        num_actions: int = 10,
+        scale_gradient: float = 8.0,
+        num_actions: int = 1,
         fino_knob: float = 0.1,
-        **kwargs 
-        
     ):
         super().__init__()
         self._model = model
         self._model_optimizer = model_optimizer
-        
         self._actor = actor
-
         self._q_nets = q_nets
-        self._q_nets_optimizer = q_nets_optimizer
-        self._target_q_nets = deepcopy(q_nets)
-
+        self._target_q_nets = deepcopy(q_nets).requires_grad_(False)
         self._v_net = v_net
-        self._v_net_optimizer = v_net_optimizer
-
+        self._state_mean = state_mean
+        self._state_std = state_std
         self._gamma = gamma
         self._tau = tau
+        self._expectile = expectile
         self._temperature = temperature
         self._exp_adv_max = exp_adv_max
-        
         self.fino = fino
         self.flag_type = flag_type
         self.flag_threshold = flag_threshold
         self.scale_gradient = scale_gradient
         self.fino_knob = fino_knob
-
         self.num_actions = num_actions
         
         
-        
+        self._ones = torch.ones(batch_size, 1, device=state_mean.device)
+        self._loss_fn = self._total_loss
+
+    def compile_losses(self, mode="reduce-overhead"):
+        self._loss_fn = torch.compile(self._total_loss, mode=mode)
+        return self
 
     def _expand_dims(self,low_dim_vector,reference):
         vector_matched_dim = expand_t_like_x(low_dim_vector,reference)
@@ -175,7 +176,7 @@ class Otter(nn.Module):
         loss_per_sample_and_dim = F.mse_loss(pred_grad, scaled_target_grad, reduction='none') # Returns (B,A), loss for each sample and each action dimension 
         loss_per_sample = loss_per_sample_and_dim.sum(dim=-1, keepdim=True) # Returns (B,1), loss for each gradient prediction
         
-        loss= loss_per_sample.mean() 
+        loss = (loss_per_sample * self._ones).mean()
         
         return loss
     
@@ -210,9 +211,10 @@ class Otter(nn.Module):
             scaled_target_grad =  self.scale_gradient * ct * target_gradient
             
             
-        pred_grad = self._model(noisy_action,states)
+        actor_states = normalize_state_tensor(states, self._state_mean, self._state_std)
+        pred_grad = self._model(noisy_action, actor_states)
         
-        weights = self._offline_weights(states=states, actions= actions, num_actions=self.num_actions)
+        weights = self._offline_weights(states=states, actions=actions)
 
         loss_per_sample_and_dim = F.mse_loss(pred_grad, scaled_target_grad, reduction='none') # Returns (B,A), loss for each sample and each action dimension 
         loss_per_sample = loss_per_sample_and_dim.sum(dim=-1, keepdim=True) # Returns (B,1), loss for each gradient prediction
@@ -222,7 +224,6 @@ class Otter(nn.Module):
         #loss= loss_per_sample.mean() # scalar loss for BC case.
         
         return loss
-
     
     def _offline_weights(self, states, actions):
             with torch.no_grad():
@@ -251,58 +252,60 @@ class Otter(nn.Module):
                 
             return weights
     
-
     def _v_critic_loss(self, states, actions):
-        
         with torch.no_grad():
-            q_1,q_2 = self._target_q_nets(states,actions)
-            q = torch.min(q_1,q_2)
+            q_1, q_2 = self._target_q_nets(states, actions)
+            q = torch.min(q_1, q_2)
         v = self._v_net(states)
         d = q - v
-        weights = torch.where(d>=0,0.9,0.1)
-        loss =  (weights * d.square()).mean()
-        return loss
+        weights = torch.where(d >= 0, self._expectile, 1.0 - self._expectile)
+        loss = (weights * d.square()).mean()
+        return loss, v, d
     
     def _q_critic_loss(self, states, actions, rewards, dones, next_states):
-        
         with torch.no_grad():
             v_next = self._v_net(next_states)
-            target = rewards + self._gamma * (1 - dones) * v_next
-        
-        q_1,q_2 = self._q_nets(states,actions)    
+            target = rewards + self._gamma * (1.0 - dones) * v_next
+        q_1, q_2 = self._q_nets(states, actions)
         q1_diff = (q_1 - target).square()
         q2_diff = (q_2 - target).square()
-        
         loss = (q1_diff + q2_diff).mean()
-        return loss
+        return loss, q_1, q_2, target
 
+    def _total_loss(self, states, actions, rewards, dones, next_states):
+        v_loss, v, d = self._v_critic_loss(states, actions)
+        q_loss, q_1, q_2, target = self._q_critic_loss(states, actions, rewards, dones, next_states)
+        actor_states = normalize_state_tensor(states, self._state_mean, self._state_std)
+        actor_loss = self._bc_actor_loss(actor_states, actions)
+        return v_loss + q_loss + actor_loss, v_loss, q_loss, actor_loss, v, d, q_1, q_2, target
 
-    def _update_critic(self, states, actions, rewards, dones, next_states):
-        loss_q = self._q_critic_loss(states, actions, rewards, dones, next_states)
-        loss_v = self._v_critic_loss(states, actions)
-        self._q_nets_optimizer.zero_grad()
-        self._v_net_optimizer.zero_grad()
-        loss_q.backward()
-        loss_v.backward()
-        self._q_nets_optimizer.step()
-        self._v_net_optimizer.step()
-        return loss_q.detach(), loss_v.detach()
-
-    def _update_actor(self, states, actions):
-        loss = self._bc_actor_loss(states, actions)
-        self._model_optimizer.zero_grad()
-        loss.backward()
-        self._model_optimizer.step()
-        return loss.detach()
-
-    def update(self, batch: TensorBatch) -> Dict[str, torch.Tensor]:
+    def update(self, batch: TensorBatch, with_stats=True) -> Dict[str, torch.Tensor]:
         states, actions, rewards, next_states, truncations, terminals = batch
-        dones = terminals
-        q_loss,v_loss = self._update_critic(states, actions, rewards, dones, next_states)
-        actor_loss  = self._update_actor(states, actions)
+        loss, v_loss, q_loss, actor_loss, v, d, q_1, q_2, target = self._loss_fn(
+            states, actions, rewards, terminals, next_states,
+        )
+        self._model_optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+
         soft_update(self._target_q_nets, self._q_nets, self._tau)
-        #result = {"actor_loss": actor_loss}
-        result = {"q_critic_loss": q_loss,"v_critic_loss": v_loss, "actor_loss": actor_loss}
+        self._model_optimizer.step()
+        if not with_stats:
+            return None
+        with torch.no_grad():
+            q = torch.min(q_1, q_2)
+            result = {
+                "q_critic_loss": q_loss.detach().clone(),
+                "v_critic_loss": v_loss.detach().clone(),
+                "actor_loss": actor_loss.detach().clone(),
+                "v_data": v.mean(),
+                "q_data": q.mean(),
+                "q_data_min": q.min(),
+                "q_data_max": q.max(),
+                "target": target.mean(),
+                "adv": d.mean(),
+                "adv_std": d.std(),
+                "adv_pos_share": (d >= 0).float().mean(),
+            }
         return result
 
     def state_dict(self) -> Dict[str, Any]:

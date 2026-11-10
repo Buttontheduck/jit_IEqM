@@ -14,6 +14,9 @@ class ReplayBuffer:
         action_dim: int,
         buffer_size: int,
         device: str = "cpu",
+        min_action: float = -1.0,
+        max_action: float = 1.0,
+        action_clip_eps: float = 1e-5,
     ):
         self._buffer_size = buffer_size
         self._pointer = 0
@@ -36,6 +39,9 @@ class ReplayBuffer:
             (buffer_size, 1), dtype=torch.float32, device=device
         )
         self._device = device
+        self._min_action = min_action
+        self._max_action = max_action
+        self._action_clip_eps = action_clip_eps
 
     def _to_tensor(self, data: np.ndarray) -> torch.Tensor:
         return torch.tensor(data, dtype=torch.float32, device=self._device)
@@ -49,7 +55,10 @@ class ReplayBuffer:
                 "Replay buffer is smaller than the dataset you are trying to load!"
             )
         self._states[:n_transitions] = self._to_tensor(data["observations"])
-        self._actions[:n_transitions] = self._to_tensor(data["actions"])
+        self._actions[:n_transitions] = self._to_tensor(np.clip(
+            data["actions"], self._min_action + self._action_clip_eps,
+            self._max_action - self._action_clip_eps,
+        ))
         self._rewards[:n_transitions] = self._to_tensor(data["rewards"][..., None])
         self._next_states[:n_transitions] = self._to_tensor(data["next_observations"])
         self._truncations[:n_transitions] = self._to_tensor(
@@ -73,7 +82,10 @@ class ReplayBuffer:
                 "Replay buffer is smaller than the dataset you are trying to load!"
             )
         self._states[:n_transitions] = self._to_tensor(data["observations"])
-        self._actions[:n_transitions] = self._to_tensor(data["actions"])
+        self._actions[:n_transitions] = self._to_tensor(np.clip(
+            data["actions"], self._min_action + self._action_clip_eps,
+            self._max_action - self._action_clip_eps,
+        ))
         self._rewards[:n_transitions] = self._to_tensor(data["rewards"][..., None])
         self._next_states[:n_transitions] = self._to_tensor(data["next_observations"])
         self._terminals[:n_transitions] = self._to_tensor(
@@ -84,8 +96,9 @@ class ReplayBuffer:
 
         print(f"Dataset size: {n_transitions}")
 
-    def sample(self, batch_size: int) -> TensorBatch:
-        indices = np.random.randint(0, min(self._size, self._pointer), size=batch_size)
+    def sample(self, batch_size: int, generator=None) -> TensorBatch:
+        indices = torch.randint(0, min(self._size, self._pointer), (batch_size,),
+                                device=self._device, generator=generator)
         states = self._states[indices]
         actions = self._actions[indices]
         rewards = self._rewards[indices]

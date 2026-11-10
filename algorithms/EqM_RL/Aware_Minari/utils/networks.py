@@ -88,14 +88,14 @@ class QCriticMLP(Module):
         
         first_layer = lin(self.input_dim,self.hidden_dim)
         layers.append(first_layer)
-        layers.append(nn.Mish())
-        layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim))
+        layers.append(nn.GELU(approximate="tanh"))
+        layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim, eps=1e-6))
 
         for _ in range(0,self.num_hidden_layers-1):
             body = lin(self.hidden_dim,self.hidden_dim)
             layers.append(body)
-            layers.append(nn.Mish())
-            layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim))
+            layers.append(nn.GELU(approximate="tanh"))
+            layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim, eps=1e-6))
         
         head = lin(self.hidden_dim,self.output_dim)
         layers.append(head)
@@ -130,14 +130,14 @@ class VCriticMLP(Module):
         
         first_layer = lin(self.input_dim,self.hidden_dim)
         layers.append(first_layer)
-        layers.append(nn.Mish())
-        layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim))
+        layers.append(nn.GELU(approximate="tanh"))
+        layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim, eps=1e-6))
 
         for _ in range(0,self.num_hidden_layers-1):
             body = lin(self.hidden_dim,self.hidden_dim)
             layers.append(body)
-            layers.append(nn.Mish())
-            layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim))
+            layers.append(nn.GELU(approximate="tanh"))
+            layers.append(nn.LayerNorm(normalized_shape=self.hidden_dim, eps=1e-6))
         
         head = lin(self.hidden_dim,self.output_dim)
         layers.append(head)

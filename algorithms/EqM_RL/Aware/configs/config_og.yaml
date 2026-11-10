@@ -1,0 +1,71 @@
+# wandb configuration
+project: E
+group: Aware_IEqM_Exp21_antmaze-large_expectile0.9
+name: Aware_IEqM_Exp21_seed1
+run_id: null
+
+# environment and dataset
+env_name: antmaze-large-navigate-singletask-v0
+ogbench_dir: /workspace/ogbench_data
+eval_tasks: own
+seed: 1
+test_seed: 69
+deterministic_torch: false
+num_train_ops: 1000001
+
+# Network Architecture Hyperparameters
+hidden_dim: 512
+num_hidden_layers: 4
+critic_hidden_dim: 512
+critic_num_hidden_layers: 4
+buffer_size: 2_000_000
+batch_size: 256
+
+# Optimization Hyperparameters
+learning_rate: 0.0003
+gamma: 0.99
+tau: 0.005
+temperature: null
+expectile: 0.9
+action_clip_eps: 0.00001
+compile: true
+compile_mode: reduce-overhead
+
+# training flags and evaluation
+normalize_reward: false
+eval_frequency: 100000
+log_frequency: 5000
+stats_every: 10
+n_test_episodes: 50
+num_actions_inference: 32
+final_evals: 3
+flip_angle: 2.0
+checkpoint_every: 100000
+
+# saving and reproducibility
+checkpoints_path: "/workspace/OfflineCORL/algorithms/EqM_RL/sweep_runs/aware_exp21_checkpoints"
+device: cuda
+
+# Otter Agent Hyperparameters (Unpacked via **cfg.agent)
+agent:
+  gamma: ${gamma}
+  tau: ${tau}
+  expectile: ${expectile}
+  temperature: ${temperature}
+  exp_adv_max: 100.0
+  fino: false
+  flag_type: 'trun'
+  flag_threshold: 0.8
+  scale_gradient: 8.0
+  num_actions: 1
+  fino_knob: 0.1
+
+actor:
+  ebm: null
+  opt_type: 'nag'
+  step_size: 0.01
+  num_step: 20
+  moment: 0.3
+  sampler_type: 'implicit'
+  ood_threshold: 0.01
+  early_stop: null

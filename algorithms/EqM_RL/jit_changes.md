@@ -1,5 +1,9 @@
 # torch.compile ("jit") in Aware: what changes in the code
 
+**Historical notes:** the current IEqM path compiles the combined training loss;
+its evaluation sampler stays eager. See [IEqM alignment](ieqm_alignment.md) for
+the current implementation and settings.
+
 This document compares the `jit` branch with `diag_offline` (commit `96e9333`), which is the same code without the compile option.
 
 All numbers were measured on this machine on 2026-11-07: RTX 4090, PyTorch 2.12.1+cu130, the `hawk` env, HalfCheetah sizes (state 17, action 6), and Aware's 4 × 256 networks. Every Otter measurement uses the config's `num_actions: 1`.

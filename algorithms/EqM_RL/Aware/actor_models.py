@@ -1,5 +1,10 @@
 from typing import Tuple
-from utils.helper import *
+from utils.helper import (
+    StateNormalizer,
+    flatten_repeated_states,
+    unflatten_repeated_tensor,
+    select_lowest_ood_actions,
+)
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,12 +16,14 @@ from collections import deque
 
 class Actor(nn.Module):
     def __init__(self, model, q_nets, v_net, action_dim, min_action, max_action, ebm,
-                 opt_type, step_size, num_step, moment, sampler_type, ood_threshold, early_stop):
+                 opt_type, step_size, num_step, moment, sampler_type, ood_threshold, early_stop,
+                 state_mean=0.0, state_std=1.0):
         super().__init__()
         
         self.model = model
         self.q_nets = q_nets
         self.v_net = v_net
+        self.state_normalizer = StateNormalizer(state_mean, state_std)
         self.action_dim = action_dim
         self.min_action = min_action
         self.max_action = max_action
@@ -56,6 +63,7 @@ class Actor(nn.Module):
         
             assert num_actions >= 1, "Number of candidate actions must be greater than 0."
 
+            state_tensor = self.state_normalizer.normalize(state_tensor)
             device = state_tensor.device
 
             
@@ -122,6 +130,7 @@ class Actor(nn.Module):
 
             device = next(self.model.parameters()).device
             state_tensor = torch.tensor(state, dtype=torch.float32, device=device)
+            state_tensor = self.state_normalizer.normalize(state_tensor)
 
             batch_size = state_tensor.shape[0]
 
@@ -149,51 +158,63 @@ class Actor(nn.Module):
 
 
     
-    @torch.no_grad
-    def sample_rejection(self, state: np.ndarray, num_actions: int = 32) -> np.ndarray:
-        
-        actor_was_training = self.training
-        model_was_training = self.model.training
-        q_nets_was_training = self.q_nets.training
+    @torch.no_grad()
+    def sample_rejection(self, state: np.ndarray, num_actions: int = 32,
+                         generator=None, return_info: bool = False):
 
-        try:
-            self.eval()
-            self.q_nets.eval()
+        single_state = state.ndim == 1
+
+        if single_state:
+            state = np.expand_dims(state, axis=0)
+
+        device = next(self.model.parameters()).device
+
+        raw_states = torch.tensor(state, dtype=torch.float32, device=device)
+        batch_size, state_dim = raw_states.shape
+
+        normalized_states = self.state_normalizer.normalize(raw_states)
+        repeated_normalized_states = normalized_states.repeat_interleave(num_actions, dim=0)
+        initial_actions = torch.randn(
+            batch_size * num_actions,
+            self.action_dim,
+            device=device,
+            generator=generator,
+        )
+        candidate_actions = self._implicit(x=initial_actions, state=repeated_normalized_states)
+        candidate_actions = torch.clamp(
+            candidate_actions,
+            min=self.min_action,
+            max=self.max_action,
+        )
+        candidate_actions = candidate_actions.view(batch_size, num_actions, self.action_dim)
 
 
-            if state.ndim == 1:
-                state = np.expand_dims(state, axis=0)
+        critic_states = raw_states.unsqueeze(dim=1)
+        critic_states = critic_states.expand(batch_size, num_actions, state_dim)
+        q1_values, q2_values = self.q_nets(critic_states, candidate_actions)
+        q_values = torch.min(q1_values, q2_values)
+        q_values = q_values.squeeze(dim=-1)
 
-            device = next(self.model.parameters()).device
-            state_tensor = torch.tensor(state, dtype=torch.float32, device=device)
+        best_q_values, best_action_indices = q_values.max(dim=1)
+        batch_indices = torch.arange(batch_size, device=device)
+        best_actions = candidate_actions[batch_indices, best_action_indices]
+        actions = best_actions.cpu().numpy()
 
-            state_repeated = state_tensor.unsqueeze(0).repeat(num_actions, 1, 1)
-            prepared_state = flatten_repeated_states(state_repeated)
+        if single_state:
+            actions = actions[0]
+        if not return_info:
+            return actions
 
-            batch_size_total = prepared_state.shape[0]
-            x = torch.randn((batch_size_total, self.action_dim), device=device)
-            flat_all_actions = self._implicit(x=x, state=prepared_state)
-            flat_all_actions = torch.clamp(
-                flat_all_actions,
-                min=self.min_action,
-                max=self.max_action,
-            )
-            
-            q1_values,q2_values = self.q_nets(prepared_state,flat_all_actions)
-            q_values = torch.min(q1_values,q2_values)
-            best_idx = torch.argmax(q_values.view(-1))
-            best_action = flat_all_actions[best_idx]
-            
-            return best_action.cpu().numpy()
-        
-        finally:
-            self.train(actor_was_training)
-            self.model.train(model_was_training)
-            self.q_nets.train(q_nets_was_training)
+        mean_candidate_q = q_values.mean(dim=1)
+        selection_gains = best_q_values - mean_candidate_q
+        info = {
+            "q_start": best_q_values.mean().item(),
+            "gain": selection_gains.sum().item(),
+            "n": batch_size,
+        }
+        return actions, info
 
-            
-       
-             
+
     def _implicit(self, x , state):
 
         is_training = self.model.training

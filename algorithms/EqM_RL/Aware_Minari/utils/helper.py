@@ -1,27 +1,14 @@
-from typing import Tuple
-
-import numpy as np
-import torch
-import torch.nn as nn
-from torch.nn import Module 
-from torch.nn import Linear as lin 
-from torch.distributions import Normal
-import torch.nn.functional as F 
 import os
 import random
-import uuid
-from typing import Optional, Tuple, Union
-import wandb
+from typing import Tuple, Union
 
-import gymnasium as gym
-import hydra
 import numpy as np
 import torch
-import torch.nn.functional
+import wandb
 
 
 def set_seed(
-    seed: int, env: Optional[gym.Env] = None, deterministic_torch: bool = False
+    seed: int, env=None, deterministic_torch: bool = False
 ):
     if env is not None:
         env.action_space.seed(seed)
@@ -42,11 +29,27 @@ def normalize_states(states: np.ndarray, mean: np.ndarray, std: np.ndarray):
     return (states - mean) / std
 
 
+def normalize_state_tensor(states: torch.Tensor, mean, std) -> torch.Tensor:
+    """Normalize actor inputs using dataset statistics; leave the raw tensor unchanged."""
+    return (states - mean) / std
+
+
+class StateNormalizer:
+    def __init__(self, mean=0.0, std=1.0):
+        self.mean = mean
+        self.std = std
+
+    def normalize(self, states: torch.Tensor) -> torch.Tensor:
+        return normalize_state_tensor(states, self.mean, self.std)
+
+
 def wrap_env(
-    env: gym.Env,
+    env,
     state_mean: Union[np.ndarray, float] = 0.0,
     state_std: Union[np.ndarray, float] = 1.0,
-) -> gym.Env:
+):
+    import gymnasium as gym
+
     def normalize_state(state):
         # Ensure the state matches the 32-bit float dtype standard in RL
         return ((state - state_mean) / state_std).astype(np.float32)
@@ -139,5 +142,3 @@ def select_lowest_ood_actions(actions: torch.Tensor, ood_scores: torch.Tensor) -
     selected_actions = torch.gather(actions, dim=0, index=indices)
     
     return selected_actions
-
-
