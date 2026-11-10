@@ -28,7 +28,14 @@ class Actor(nn.Module):
         self.sampler_type = sampler_type
         self.ood_threshold = ood_threshold
         self.early_stop = early_stop
-
+        self.descend_fn = self._descend
+        self._compiled = False 
+        
+        
+    def compile_sampler(self, mode: str = "reduce-overhead"):
+        self.descend_fn = torch.compile(self._descend, mode=mode)
+        self._compiled = True
+        return self
 
 
     def forward(self, state: torch.Tensor, num_actions: int = 1):
@@ -92,60 +99,6 @@ class Actor(nn.Module):
             return predicted_actions, ood_scores
         
 
-
-    @torch.no_grad()
-    def sample2(self, state: np.ndarray, num_actions_inference: int = 10) -> np.ndarray:
-        """
-        Evaluation method. Expected to be called by Gym/Gymnasium.
-        Generates actions, forcefully filters OOD, and ranks via Critics.
-        """
-        actor_was_training = self.training
-        model_was_training = self.model.training
-        critic_1_was_training = self.critic_1.training
-        critic_2_was_training = self.critic_2.training
-
-        try:
-            self.eval()
-            self.critic_1.eval()
-            self.critic_2.eval()
-
-            if state.ndim == 1:
-                state = np.expand_dims(state, axis=0)
-
-            device = next(self.model.parameters()).device
-            state_tensor = torch.tensor(state, dtype=torch.float32, device=device)
-
-            state_repeated = state_tensor.unsqueeze(0).repeat(num_actions_inference, 1, 1)
-            prepared_state = flatten_repeated_states(state_repeated)
-
-            batch_size_total = prepared_state.shape[0]
-            x = torch.randn((batch_size_total, self.action_dim), device=device)
-
-            if self.early_stop is not None:
-                flat_actions, flat_ood_scores = self._implicit_OOD_stop(
-                    x=x,
-                    state=prepared_state,
-                    tau_opt=self.early_stop,
-                )
-            else:
-                flat_actions, flat_ood_scores = self._implicit_OOD_leaky_bucket(x=x, state=prepared_state)
-
-            actions = unflatten_repeated_tensor(flat_actions, num_actions_inference)
-            ood_scores = unflatten_repeated_tensor(flat_ood_scores, num_actions_inference)
-
-            best_action_tensor = self._reject_and_rank(actions, ood_scores, state_tensor)
-            best_action_tensor = torch.clamp(
-                best_action_tensor,
-                min=self.min_action,
-                max=self.max_action,
-            )
-            return best_action_tensor.cpu().numpy()
-        finally:
-            self.train(actor_was_training)
-            self.model.train(model_was_training)
-            self.critic_1.train(critic_1_was_training)
-            self.critic_2.train(critic_2_was_training)
-
     @torch.no_grad()
     def sample(self, state: np.ndarray) -> np.ndarray:
         """
@@ -201,13 +154,12 @@ class Actor(nn.Module):
         
         actor_was_training = self.training
         model_was_training = self.model.training
-        critic_1_was_training = self.critic_1.training
-        critic_2_was_training = self.critic_2.training
+        q_nets_was_training = self.q_nets.training
 
         try:
             self.eval()
-            self.critic_1.eval()
-            self.critic_2.eval()
+            self.q_nets.eval()
+
 
             if state.ndim == 1:
                 state = np.expand_dims(state, axis=0)
@@ -221,25 +173,24 @@ class Actor(nn.Module):
             batch_size_total = prepared_state.shape[0]
             x = torch.randn((batch_size_total, self.action_dim), device=device)
             flat_all_actions = self._implicit(x=x, state=prepared_state)
+            flat_all_actions = torch.clamp(
+                flat_all_actions,
+                min=self.min_action,
+                max=self.max_action,
+            )
             
             q1_values,q2_values = self.q_nets(prepared_state,flat_all_actions)
             q_values = torch.min(q1_values,q2_values)
             best_idx = torch.argmax(q_values.view(-1))
             best_action = flat_all_actions[best_idx]
             
-            best_action = torch.clamp(
-                best_action,
-                min=self.min_action,
-                max=self.max_action,
-            )
-            
             return best_action.cpu().numpy()
         
         finally:
             self.train(actor_was_training)
             self.model.train(model_was_training)
-            self.critic_1.train(critic_1_was_training)
-            self.critic_2.train(critic_2_was_training)
+            self.q_nets.train(q_nets_was_training)
+
             
        
              
@@ -247,26 +198,35 @@ class Actor(nn.Module):
 
         is_training = self.model.training
         self.model.eval()
-
         with torch.no_grad():
-            if self.opt_type == "gd":
-                for _ in range(self.num_step):
-                    grad = self.model(x,state)
-                    x = x - self.step_size * grad
-
-            elif self.opt_type == "nag":
-                m = torch.zeros_like(x)
-                for _ in range(self.num_step):
-                    x_lookahead = x - self.step_size * m * self.moment
-                    grad = self.model(x_lookahead,state)
-                    m = grad
-                    x = x - self.step_size * m
-            else:
-                raise ValueError(f"\n Action Gradient optimizer must be 'gd' or 'nag', got '{self.opt_type}' \n ")
+            
+            x = self.descend_fn(x,state)
+            if self._compiled:
+                x = x.clone()
         
         if is_training:
             self.model.train()
         return x
+    
+    
+    def _descend(self,x,state):
+        if self.opt_type == "gd":
+            for _ in range(self.num_step):
+                grad = self.model(x,state)
+                x = x - self.step_size * grad
+
+        elif self.opt_type == "nag":
+            m = torch.zeros_like(x)
+            for _ in range(self.num_step):
+                x_lookahead = x - self.step_size * m * self.moment
+                grad = self.model(x_lookahead,state)
+                m = grad
+                x = x - self.step_size * m
+        else:
+            raise ValueError(f"\n Action Gradient optimizer must be 'gd' or 'nag', got '{self.opt_type}' \n ")
+        return x
+                
+        
     
 
     def _implicit_OOD(self, x , state):

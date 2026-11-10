@@ -236,16 +236,16 @@ class Otter(nn.Module):
                 
 
                 weights = torch.clamp_max(input=torch.exp(adv/self._temperature), max=self._exp_adv_max) 
-                gl.log("weighting/q_mean",            q.mean().item())
-                gl.log("weighting/v_mean",            v.mean().item())
-                gl.log("weighting/adv_mean",          adv.mean().item())
-                gl.log("weighting/adv_std",           adv.std(unbiased=False).item())
-                gl.log("weighting/weights_mean",      weights.mean().item())
-                gl.log("weighting/weights_max",       weights.max().item())
-                gl.log("weighting/weights_min",       weights.min().item())
-                gl.log("weighting/weights_var",       weights.var(unbiased=False).item())
-                gl.log("weighting/weights_median",    weights.median().item())
-                gl.log("weighting/weights_clip_frac", (weights >= self._exp_adv_max).float().mean().item())
+                gl.log("weighting/q_mean",            q.mean())
+                gl.log("weighting/v_mean",            v.mean())
+                gl.log("weighting/adv_mean",          adv.mean())
+                gl.log("weighting/adv_std",           adv.std(unbiased=False))
+                gl.log("weighting/weights_mean",      weights.mean())
+                gl.log("weighting/weights_max",       weights.max())
+                gl.log("weighting/weights_min",       weights.min())
+                gl.log("weighting/weights_var",       weights.var(unbiased=False))
+                gl.log("weighting/weights_median",    weights.median())
+                gl.log("weighting/weights_clip_frac", (weights >= self._exp_adv_max).float().mean())
                 
                 
                 
@@ -255,31 +255,30 @@ class Otter(nn.Module):
     def _v_critic_loss(self, states, actions):
         
         with torch.no_grad():
-            q_1,q_2 = self._q_nets(states,actions)
-            v = self._v_net(states)
+            q_1,q_2 = self._target_q_nets(states,actions)
             q = torch.min(q_1,q_2)
-            d = q - v
-            if d>=0:
-                loss = torch.multiply(0.9,d**2)
-            else:
-                loss = torch.multiply(0.1,d**2)
+        v = self._v_net(states)
+        d = q - v
+        weights = torch.where(d>=0,0.9,0.1)
+        loss =  (weights * d.square()).mean()
         return loss
     
-    def _q_critic_loss(self, states, actions, rewards, dones):
+    def _q_critic_loss(self, states, actions, rewards, dones, next_states):
         
         with torch.no_grad():
-            v_next = self._v_net(states)
-            target = rewards + self._gamma * dones * v_next
-            q_1,q_2 = self._q_nets(states,actions)
-            q1_diff = (q_1 - target)**2
-            q2_diff = (q_2 - target)**2
+            v_next = self._v_net(next_states)
+            target = rewards + self._gamma * (1 - dones) * v_next
         
-        loss = q1_diff + q2_diff
+        q_1,q_2 = self._q_nets(states,actions)    
+        q1_diff = (q_1 - target).square()
+        q2_diff = (q_2 - target).square()
+        
+        loss = (q1_diff + q2_diff).mean()
         return loss
 
 
     def _update_critic(self, states, actions, rewards, dones, next_states):
-        loss_q = self._q_critic_loss(states, actions, rewards, dones)
+        loss_q = self._q_critic_loss(states, actions, rewards, dones, next_states)
         loss_v = self._v_critic_loss(states, actions)
         self._q_nets_optimizer.zero_grad()
         self._v_net_optimizer.zero_grad()
@@ -287,22 +286,21 @@ class Otter(nn.Module):
         loss_v.backward()
         self._q_nets_optimizer.step()
         self._v_net_optimizer.step()
-        return loss_q.item(), loss_v.item()
+        return loss_q.detach(), loss_v.detach()
 
     def _update_actor(self, states, actions):
         loss = self._bc_actor_loss(states, actions)
         self._model_optimizer.zero_grad()
         loss.backward()
         self._model_optimizer.step()
-        return loss.item()
+        return loss.detach()
 
-    def update(self, batch: TensorBatch) -> Dict[str, float]:
+    def update(self, batch: TensorBatch) -> Dict[str, torch.Tensor]:
         states, actions, rewards, next_states, truncations, terminals = batch
         dones = terminals
         q_loss,v_loss = self._update_critic(states, actions, rewards, dones, next_states)
         actor_loss  = self._update_actor(states, actions)
-        soft_update(self._target_critic_1, self._critic_1, self._tau)
-        soft_update(self._target_critic_2, self._critic_2, self._tau)
+        soft_update(self._target_q_nets, self._q_nets, self._tau)
         #result = {"actor_loss": actor_loss}
         result = {"q_critic_loss": q_loss,"v_critic_loss": v_loss, "actor_loss": actor_loss}
         return result
@@ -310,36 +308,13 @@ class Otter(nn.Module):
     def state_dict(self) -> Dict[str, Any]:
         return {
             "model": self._model.state_dict(),
-            "critic_1": self._critic_1.state_dict(),
-            "critic_2": self._critic_2.state_dict(),
+            "q_nets": self._q_nets.state_dict(),
+            "target_q_nets": self._target_q_nets.state_dict(),
+            "v_net": self._v_net.state_dict(),
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
         self._model.load_state_dict(state_dict["model"])
-        self._critic_1.load_state_dict(state_dict["critic_1"])
-        self._critic_2.load_state_dict(state_dict["critic_2"]) 
-
-
-
-
-
-###################### CODE PARTS FROM AWAC ############################
-
-    # def _actor_loss(self, states, actions):
-    #     with torch.no_grad():
-    #         pi_action, _ = self._model(states)
-    #         v = torch.min(
-    #             self._critic_1(states, pi_action), self._critic_2(states, pi_action)
-    #         )
-
-    #         q = torch.min(
-    #             self._critic_1(states, actions), self._critic_2(states, actions)
-    #         )
-    #         adv = q - v
-    #         weights = torch.clamp_max(
-    #             torch.exp(adv / self._awac_lambda), self._exp_adv_max
-    #         )
-
-    #     action_log_prob = self._model.log_prob(states, actions)
-    #     loss = (-action_log_prob * weights).mean()
-    #     return loss
+        self._q_nets.load_state_dict(state_dict["q_nets"])
+        self._target_q_nets.load_state_dict(state_dict["target_q_nets"])
+        self._v_net.load_state_dict(state_dict["v_net"])

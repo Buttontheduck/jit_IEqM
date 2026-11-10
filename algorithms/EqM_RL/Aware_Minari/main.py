@@ -98,8 +98,8 @@ def train(cfg: DictConfig):
 
     actor = Actor(
         model         = model,
-        Qnets         = Qnets,
-        Vnet          = Vnet,        
+        q_nets        = Qnets,
+        v_net         = Vnet,        
         action_dim    = action_dim,
         min_action    = env.action_space.low[0],
         max_action    = env.action_space.high[0],
@@ -112,6 +112,8 @@ def train(cfg: DictConfig):
         ood_threshold = cfg.actor.ood_threshold,
         early_stop    = cfg.actor.early_stop
         )
+    
+    actor.compile_sampler()
 
     agent = Otter(
         model               = model,
@@ -134,7 +136,6 @@ def train(cfg: DictConfig):
             episode_reward = 0.0
             while not done:
                 action = actor.sample_rejection(state)
-                action = np.squeeze(action, axis=0)
                 state, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated
                 episode_reward += reward
@@ -158,7 +159,6 @@ def train(cfg: DictConfig):
             update_result = agent.update(batch)
             for key, val in update_result.items():
                 gl.log(f"train/{key}", val)
-            gl.dump(step=t)
             if (t) % cfg.eval_frequency == 0:
                 eval_scores = eval_actor(env, cfg.n_test_episodes, cfg.test_seed)
 
@@ -167,14 +167,17 @@ def train(cfg: DictConfig):
                     eval_scores.mean(), ref_scores
                 )
                 gl.log("eval/normalized_score", normalized_eval_scores)
-                
-                gl.dump(step=t)
-
                 if getattr(cfg, "actual_checkpoints_path", None) is not None:
                     torch.save(
                         agent.state_dict(),
                         os.path.join(cfg.actual_checkpoints_path, f"checkpoint_{t}.pt"),
                     )
+            if (
+                (t + 1) % cfg.log_frequency == 0
+                or t % cfg.eval_frequency == 0
+                or t == cfg.num_train_ops - 1
+            ):
+                gl.dump(step=t)
     finally:
         wandb.finish()
 

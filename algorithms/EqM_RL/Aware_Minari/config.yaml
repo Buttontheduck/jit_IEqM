@@ -28,6 +28,7 @@ temperature: 1.0
 # training flags and evaluation
 normalize_reward: false
 eval_frequency: 1000
+log_frequency: 100
 n_test_episodes: 1
 num_actions_inference: 1
 
