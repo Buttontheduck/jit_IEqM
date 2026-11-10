@@ -7,7 +7,7 @@ from torch.nn import Module
 from torch.nn import Linear as lin 
 from torch.distributions import Normal
 import torch.nn.functional as F 
-from utils.networks import MLP
+from utils.networks import MLP, QCriticMLP,VCriticMLP
 
 
 
@@ -64,48 +64,102 @@ class DeterministicCritic(Module):
         value = self.model(x)
 
         return value
-    
-    
-class GaussianCritic(Module):
-    def __init__(self,state_dim, action_dim, hidden_dim, num_hidden, num_samples):
+
+
+
+
+class QCritic(Module):
+    def __init__(self,state_dim, action_dim, hidden_dim, num_hidden_layers, num_critics):
         super().__init__()
 
-        self.state_dim = state_dim 
-        self.action_dim = action_dim
-        self.hidden_dim = hidden_dim
-        self.num_hidden = num_hidden
-        self.output_dim = hidden_dim
-
-        self.num_samples = num_samples
+        self.state_dim         = state_dim 
+        self.action_dim        = action_dim
+        self.hidden_dim        = hidden_dim
+        self.num_hidden_layers = num_hidden_layers
+        self.num_critic        = num_critics
+        self.output_dim        = 1
 
         self.input_dim = self.state_dim + self.action_dim
 
-        self.model = MLP(
-            input_dim  = self.input_dim, 
-            output_dim = self.output_dim, 
-            hidden_dim = self.hidden_dim,
-            num_hidden = self.num_hidden-1
+        self.model = QCriticMLP(
+            input_dim         = self.input_dim, 
+            output_dim        = self.output_dim, 
+            hidden_dim        = self.hidden_dim,
+            num_hidden_layers = self.num_hidden_layers
+            ) 
+
+    def forward(self,state: torch.tensor , action: torch.tensor) -> torch.Tensor:
+        
+        value = self.model(state,action)
+        return value
+
+
+
+class TwinCritic(Module):
+    def __init__(self,state_dim, action_dim, hidden_dim, num_hidden_layers):
+        super().__init__()
+
+        self.state_dim         = state_dim 
+        self.action_dim        = action_dim
+        self.hidden_dim        = hidden_dim
+        self.num_hidden_layers = num_hidden_layers
+        self.output_dim        = 1
+
+        self.input_dim = self.state_dim + self.action_dim
+
+        self.q1 = QCriticMLP(
+            input_dim         = self.input_dim, 
+            output_dim        = self.output_dim, 
+            hidden_dim        = self.hidden_dim,
+            num_hidden_layers = self.num_hidden_layers
+            )
+        self.q2 = QCriticMLP(
+            input_dim         = self.input_dim, 
+            output_dim        = self.output_dim, 
+            hidden_dim        = self.hidden_dim,
+            num_hidden_layers = self.num_hidden_layers
             )
 
+    def forward(self,state: torch.tensor , action: torch.tensor) -> torch.Tensor:
+        
+        q1_value = self.q1(state,action)
+        q2_value = self.q2(state,action)     
 
-        self.mean_layer    = lin(in_features=self.hidden_dim,out_features=1)
-        self.log_std_layer = lin(in_features=self.hidden_dim,out_features=1)
+        return q1_value,q2_value
 
-    def forward(self,state,action):
 
-        x = torch.cat([state,action],dim=1)
-        x = self.model(x)
-        x = F.mish(x)
+class VCritic(Module):
+    def __init__(self,state_dim, hidden_dim, num_hidden_layers):
+        super().__init__()
 
-        mean = self.mean_layer(x)
-        log_std = self.log_std_layer(x)
-        log_std = torch.clamp(log_std, min=-20, max=2)
-        std = log_std.exp()
+        self.state_dim         = state_dim 
+        self.hidden_dim        = hidden_dim
+        self.num_hidden_layers = num_hidden_layers
+        self.output_dim        = 1
 
-        dist = Normal(mean,std)
+        self.input_dim = self.state_dim
 
-        values = dist.sample((self.num_samples,))
-        value = torch.mean(values, dim=0)
+        self.model =  VCriticMLP(
+            input_dim         = self.input_dim, 
+            output_dim        = self.output_dim, 
+            hidden_dim        = self.hidden_dim,
+            num_hidden_layers = self.num_hidden_layers
+            )
 
+    def forward(self,state: torch.tensor ) -> torch.Tensor:
+        
+        value = self.model(state)
         return value
-    
+
+
+
+
+
+
+
+
+
+
+
+
+

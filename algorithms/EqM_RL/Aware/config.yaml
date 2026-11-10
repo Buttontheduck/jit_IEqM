@@ -2,7 +2,7 @@
 project: E
 group: test_halfcheetah_medium_v2
 name: run_2
-run_id: null
+run_id: null   # null = new random id per run, so parallel runs never share a W&B run or checkpoint folder
 
 # environment and dataset
 env_name: halfcheetah-medium-v2    #hopper-medium-v2 #walker2d-medium-v2 #halfcheetah-medium-expert-v2
@@ -28,6 +28,7 @@ temperature: 1.0
 # training flags and evaluation
 normalize_reward: false
 eval_frequency: 1000
+log_frequency: 100
 n_test_episodes: 1
 num_actions_inference: 1
 
@@ -35,8 +36,14 @@ num_actions_inference: 1
 checkpoints_path: "/Users/batin13/Desktop/RL Projects/Trained_Models/checkpoints/"
 device: mps # or 'cuda'
 
+
+
+num_critic: 10
+
 # Otter Agent Hyperparameters (Unpacked via **cfg.agent)
 agent:
+  critic_type: nsemble_q #twin_critic
+  num_critic: 10 #2
   gamma: ${gamma}
   tau: ${tau}
   temperature: ${temperature}
