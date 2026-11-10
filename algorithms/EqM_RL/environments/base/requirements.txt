@@ -1,0 +1,4 @@
+# Snapshot of pip-managed packages on 2026-11-10; Linux x86_64.
+# First restore Conda packages from conda-linux-64.lock.txt or environment.yml.
+# See ../README.md for bootstrap/build dependencies and MuJoCo setup.
+docutils==0.23

@@ -1,0 +1,52 @@
+{
+  "created_utc": "2026-11-10T22:07:45.457773+00:00",
+  "platform": "linux-64",
+  "os": "Ubuntu 24.04.5 LTS",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "driver": "595.91.07",
+  "environments": {
+    "base": {
+      "python": "3.14.9",
+      "conda_package_count": 169,
+      "pip_requirement_count": 1,
+      "pip_check": "No broken requirements found."
+    },
+    "eagle": {
+      "python": "3.10.0",
+      "conda_package_count": 27,
+      "pip_requirement_count": 154,
+      "pip_check": "No broken requirements found."
+    },
+    "hawk": {
+      "python": "3.10.22",
+      "conda_package_count": 24,
+      "pip_requirement_count": 85,
+      "pip_check": "No broken requirements found."
+    },
+    "ogbench": {
+      "python": "3.10.0",
+      "conda_package_count": 29,
+      "pip_requirement_count": 160,
+      "pip_check": "No broken requirements found."
+    }
+  },
+  "dataset_sha256": [
+    "41324e8487a9556d8cfa4538827f8937f4d63dae3030825ebc9f3a726ed08ca0  /root/.d4rl/datasets/halfcheetah_medium-v2.hdf5",
+    "2dbe946ac107ca5ac524f82f7a72efa951ceab0be915201d6b32e612d823f2e7  /workspace/ogbench_data/antmaze-large-navigate-v0.npz",
+    "e9a4126825faefb57c34c29f1ee423858dbc4b6f71d9a9846a8b8bdb908b44a1  /workspace/ogbench_data/antmaze-large-navigate-v0-val.npz"
+  ],
+  "mujoco210_libraries_sha256": {
+    "libglfw.so.3": "3cc8e13cbf3d5fd881d269e9ecdd7d5be077a195bde7ab260b99f1cb99683530",
+    "libglew.so": "00b6f9d088b7b254df5145649f201399f2979337107cb1b5fa617517cde6a3c6",
+    "libglewegl.so": "dcada3eea58e0421e4c1d92ee4fd550474b86917a92fc0b2c2e9affa814be0bb",
+    "libglewosmesa.so": "8171adaa15793b25ebffb03b07b38a54362f0a6e592dd8d93db36f142812f681",
+    "libmujoco210.so": "9e7ffba152bff0e4e889e2fddf3850785fb5da28ebd05adbb6f4daaa34e3bd21",
+    "libmujoco210nogl.so": "0a4433deacab895199083db97c644f687d732d07e7be6ba38f21cc3b119dd2c5"
+  },
+  "validation": {
+    "pip_check": "passed in all four source environments",
+    "installed_versions_and_vcs": "matched in all four source environments",
+    "conda_explicit_dry_run": "passed for all four snapshots",
+    "clean_install_tested": false
+  }
+}
